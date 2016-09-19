@@ -26,7 +26,6 @@ import Propellor.Types.Info
 import Propellor.Types.Core
 import Propellor.Property.Chroot.Util
 import qualified Propellor.Property.Debootstrap as Debootstrap
-import qualified Propellor.Property.Systemd.Core as Systemd
 import qualified Propellor.Property.File as File
 import qualified Propellor.Shim as Shim
 import Propellor.Property.Mount
@@ -123,14 +122,15 @@ bootstrapped bootstrapper location ps = Chroot location bootstrapper (host locat
 -- is first unmounted. Note that it does not ensure that any processes
 -- that might be running inside the chroot are stopped.
 provisioned :: Chroot -> RevertableProperty (HasInfo + Linux) Linux
-provisioned c = provisioned' (propagateChrootInfo c) c False
+provisioned c = provisioned' (propagateChrootInfo c) c False Nothing
 
 provisioned'
 	:: (Property Linux -> Property (HasInfo + Linux))
 	-> Chroot
 	-> Bool
+	-> Maybe ChildProperty
 	-> RevertableProperty (HasInfo + Linux) Linux
-provisioned' propigator c@(Chroot loc bootstrapper _) systemdonly =
+provisioned' propigator c@(Chroot loc bootstrapper _) systemdonly provisionProps =
 	(propigator $ setup `describe` chrootDesc c "exists")
 		<!>
 	(teardown `describe` chrootDesc c "removed")

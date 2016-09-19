@@ -64,13 +64,18 @@ type ServiceName = String
 
 type MachineName = String
 
-data Container = Container MachineName Chroot.Chroot Host
+data Container metatypes = Container
+    { containerMachineName :: MachineName
+    , containerChroot :: Chroot.Chroot
+    , containerHost :: Host
+    , containerChrootProvision :: Property metatypes
+    }
 	deriving (Show)
 
-instance IsContainer Container where
-	containerProperties (Container _ _ h) = containerProperties h
-	containerInfo (Container _ _ h) = containerInfo h
-	setContainerProperties (Container n c h) ps = Container n c (setContainerProperties h ps)
+instance IsContainer (Container metatypes) where
+	containerProperties (Container _ _ h _) = containerProperties h
+	containerInfo (Container _ _ h _) = containerInfo h
+	setContainerProperties (Container n c h cps) ps = Container n c (setContainerProperties h ps) cps
 
 -- | Starts a systemd service.
 --
@@ -148,6 +153,12 @@ persistentJournal = check (not <$> doesDirectoryExist dir) $
   where
 	dir = "/var/log/journal"
 
+-- dbus is only a Recommends of systemd, but is needed for communication
+-- from the systemd inside a container to the one outside, so make sure it
+-- gets installed.
+installed :: Property DebianLike
+installed = Apt.installed ["systemd", "dbus"]
+
 type Option = String
 
 -- | Ensures that an option is configured in one of systemd's config files.
@@ -220,9 +231,9 @@ machined = withOS "machined installed" $ \w o ->
 -- >	& osDebian Unstable X86_64
 -- >    & Apt.installedRunning "apache2"
 -- >    & ...
-container :: MachineName -> (FilePath -> Chroot.Chroot) -> Container
+container :: MachineName -> (FilePath -> Chroot.Chroot) -> Container DebianLike
 container name mkchroot =
-	let c = Container name chroot h
+	let c = Container name chroot h installed
 	in setContainerProps c $ containerProps c
 		&^ resolvConfed
 		&^ linkJournal
@@ -241,7 +252,7 @@ container name mkchroot =
 -- >	& osDebian Unstable X86_64
 -- >    & Apt.installedRunning "apache2"
 -- >    & ...
-debContainer :: MachineName -> Props metatypes -> Container
+debContainer :: MachineName -> Props metatypes -> Container DebianLike
 debContainer name ps = container name $ \d -> Chroot.debootstrapped mempty d ps
 
 -- | Runs a container using systemd-nspawn.
@@ -258,8 +269,8 @@ debContainer name ps = container name $ \d -> Chroot.debootstrapped mempty d ps
 --
 -- Reverting this property stops the container, removes the systemd unit,
 -- and deletes the chroot and all its contents.
-nspawned :: Container -> RevertableProperty (HasInfo + Linux) Linux
-nspawned c@(Container name (Chroot.Chroot loc builder _) h) =
+nspawned :: Container metatypes -> RevertableProperty (HasInfo + Linux) Linux
+nspawned c@(Container name (Chroot.Chroot loc builder _) h _) =
 	p `describe` ("nspawned " ++ name)
   where
 	p :: RevertableProperty (HasInfo + Linux) Linux
@@ -285,8 +296,8 @@ nspawned c@(Container name (Chroot.Chroot loc builder _) h) =
 
 -- | Sets up the service file for the container, and then starts
 -- it running.
-nspawnService :: Container -> ChrootCfg -> RevertableProperty Linux Linux
-nspawnService (Container name _ _) cfg = setup <!> teardown
+nspawnService :: Container metatypes -> ChrootCfg -> RevertableProperty Linux Linux
+nspawnService (Container name _ _ _) cfg = setup <!> teardown
   where
 	service = nspawnServiceName name
 	servicefile = "/etc/systemd/system/multi-user.target.wants" </> service
@@ -342,8 +353,8 @@ nspawnServiceParams (SystemdNspawnCfg ps) =
 --
 -- This uses nsenter to enter the container, by looking up the pid of the
 -- container's init process and using its namespace.
-enterScript :: Container -> RevertableProperty Linux Linux
-enterScript c@(Container name _ _) =
+enterScript :: Container metatypes -> RevertableProperty Linux Linux
+enterScript c@(Container name _ _ _) =
 	tightenTargets setup <!> tightenTargets teardown
   where
 	setup = combineProperties ("generated " ++ enterScriptFile c) $ props
@@ -366,10 +377,10 @@ enterScript c@(Container name _ _) =
 	teardown = File.notPresent scriptfile
 	scriptfile = enterScriptFile c
 
-enterScriptFile :: Container -> FilePath
-enterScriptFile (Container name _ _ ) = "/usr/local/bin/enter-" ++ mungename name
+enterScriptFile :: Container metatypes -> FilePath
+enterScriptFile (Container name _ _ _) = "/usr/local/bin/enter-" ++ mungename name
 
-enterContainerProcess :: Container -> [String] -> IO (CreateProcess, IO ())
+enterContainerProcess :: Container metatypes -> [String] -> IO (CreateProcess, IO ())
 enterContainerProcess c ps = pure (proc (enterScriptFile c) ps, noop)
 
 nspawnServiceName :: MachineName -> ServiceName
